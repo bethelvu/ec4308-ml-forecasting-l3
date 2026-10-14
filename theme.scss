@@ -1,0 +1,17 @@
+/*-- scss:defaults --*/
+$body-bg: #ffffff;
+$body-color: #1a1a1a;
+$presentation-heading-color: #1f3864;
+$link-color: #1f6f2e;
+$code-color: #c00000;
+
+/*-- scss:rules --*/
+.reveal .slides section h1 { color: #1f3864; }
+.reveal.smaller .slides section h1 { font-size: 2.29em; }   /* 64 px titles (was 100 px), as in the deck */
+.reveal .slides section h3 { color: #1f6f2e; }
+.reveal blockquote { border-left: 4px solid #1f6f2e; background: #f0f7f0; padding: 0.3em 0.8em; }
+
+/* tables styled like the deck: bold header, light green banding */
+.reveal table { border-collapse: collapse; }
+.reveal table thead th { background: #dfe9d3; font-weight: 600; }
+.reveal table tbody tr:nth-child(odd) { background: #f2f7ec; }

@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ridge Regression Demo</title>
+<style>
+  :root { --ink:#1f3864; --green:#1f6f2e; --muted:#595959; --bg:#ffffff; }
+  html, body { margin:0; background:var(--bg); color:#222; font-family:'Segoe UI', Calibri, sans-serif; }
+  .wrap { max-width:1240px; margin:0 auto; padding:8px 12px; box-sizing:border-box; }
+  h3 { color:var(--green); font-size:20px; margin:0 0 6px 0; font-weight:600; }
+  .ctrl { display:flex; align-items:center; gap:10px; margin:4px 0 8px 0; flex-wrap:wrap; }
+  .ctrl label { font-size:16px; color:#333; white-space:nowrap; }
+  .ctrl input[type=range]{ width:140px; }
+  .ctrl var { font-weight:bold; min-width:70px; font-size:16px; color:var(--ink); font-style:normal; }
+  .btn { font-size:15px; padding:3px 10px; border:1px solid var(--green); border-radius:4px; background:#fff; color:var(--ink); cursor:pointer; }
+  .btn.on { background:var(--green); color:#fff; }
+  .row { display:flex; gap:10px; align-items:flex-start; }
+  .panel { flex:1 1 0; min-width:0; }
+  .panel svg { width:100%; height:auto; display:block; background:#fff; border:1px solid #e6e6e6; border-radius:4px; }
+  .readout { flex:0 0 230px; background:#f4f8f4; border:1px solid #d0d8d0; border-radius:6px; padding:8px 10px; font-size:14px; line-height:1.45; box-sizing:border-box; }
+  .readout b { color:var(--ink); }
+  .cap { font-size:14px; color:var(--muted); text-align:center; margin-top:3px; }
+  svg text { font-family:'Segoe UI', Calibri, sans-serif; paint-order:stroke; stroke:#fff; stroke-width:3px; stroke-linejoin:round; }
+  @media (max-width:900px){ .row { flex-wrap:wrap; } .panel { flex:1 1 45%; } .readout { flex:1 1 100%; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h3>Ridge regression — geometry, shrinkage, bias–variance</h3>
+  <div class="ctrl">
+    <label for="lam">Penalty λ</label>
+    <input type="range" id="lam" min="-2" max="3" value="0.5" step="0.05">
+    <var id="lamVal">λ = 3.16</var>
+    <label for="rho">Corr(x₁, x₂) ρ</label>
+    <input type="range" id="rho" min="0" max="0.95" value="0.8" step="0.05">
+    <var id="rhoVal">ρ = 0.80</var>
+    <label for="sig">Noise σ</label>
+    <input type="range" id="sig" min="0.5" max="4" value="2" step="0.1">
+    <var id="sigVal">σ = 2.0</var>
+    <button class="btn" id="bNew">New sample</button>
+    <button class="btn" id="bSweep">▶ Sweep λ</button>
+  </div>
+  <div class="row">
+    <div class="panel"><svg id="geo" viewBox="0 0 330 300"></svg><div class="cap">β₁–β₂ plane: RSS contours, ridge disk, ridge path</div></div>
+    <div class="panel"><svg id="path" viewBox="0 0 330 300"></svg><div class="cap">Coefficient paths vs log₁₀ λ</div></div>
+    <div class="panel"><svg id="bv" viewBox="0 0 330 300"></svg><div class="cap">Monte Carlo (200 samples): bias², variance, test MSE (bias² and variance × (1+1/N); y-axis up to 3× the OLS excess, higher values clipped)</div></div>
+    <div class="readout" id="ro"></div>
+  </div>
+</div>
+<script>
+/* ---------------- seeded RNG (modulus computed, not typed) ---------------- */
+const N = 30, S = 200, BETA = [1.5, 0.5];
+let _s = 20260301;
+function rnd(){ var M = Math.pow(2,31) - 1; _s = (_s*48271 + 12345) % M; return (_s + 0.5)/M; }
+function randn(){ return Math.sqrt(-2*Math.log(rnd())) * Math.cos(2*Math.PI*rnd()); }
+
+// fixed standard-normal draws: z1, z2, eps for S Monte Carlo samples (+ the displayed sample)
+let Z = [];
+function drawAll(){ Z = []; for(let s=0;s<S;s++){ const a=[],b=[],e=[]; for(let i=0;i<N;i++){ a.push(randn()); b.push(randn()); e.push(randn()); } Z.push([a,b,e]); } }
+drawAll();
+let shown = 0;
+
+let LAM = Math.pow(10,0.5), RHO = 0.8, SIG = 2.0;
+
+/* build one sample: x1=z1, x2=rho z1 + sqrt(1-rho^2) z2, centred; y = x'beta + sigma eps, centred */
+function sample(s){
+  const [a,b,e] = Z[s]; const c = Math.sqrt(1-RHO*RHO);
+  const x1=[], x2=[], y=[];
+  for(let i=0;i<N;i++){ const u=a[i], v=RHO*a[i]+c*b[i]; x1.push(u); x2.push(v); y.push(BETA[0]*u+BETA[1]*v+SIG*e[i]); }
+  const m=v=>v.reduce((p,q)=>p+q,0)/v.length, m1=m(x1), m2=m(x2), my=m(y);
+  let s11=0,s12=0,s22=0,s1y=0,s2y=0;
+  for(let i=0;i<N;i++){ const u=x1[i]-m1, v=x2[i]-m2, w=y[i]-my; s11+=u*u; s12+=u*v; s22+=v*v; s1y+=u*w; s2y+=v*w; }
+  return {A:[[s11,s12],[s12,s22]], g:[s1y,s2y]};
+}
+function ridge(d, lam){   // (X'X + lam I)^{-1} X'y, 2x2 closed form
+  const a=d.A[0][0]+lam, b=d.A[0][1], c=d.A[1][1]+lam, det=a*c-b*b;
+  return [( c*d.g[0]-b*d.g[1])/det, (-b*d.g[0]+a*d.g[1])/det];
+}
+
+/* ---------------- Monte Carlo decomposition over a log-lambda grid ---------------- */
+const LG = []; for(let k=0;k<=100;k++) LG.push(-2 + 5*k/100);   // 0.05 steps = slider step
+let MC = null;
+function quad(d){ return d[0]*d[0] + 2*RHO*d[0]*d[1] + d[1]*d[1]; }   // d' Sigma d,  Sigma = [[1,rho],[rho,1]]
+let MC0 = null;   // exact OLS (lambda = 0)
+function mcAt(D, lam){ let m0=0,m1=0; const bs=[]; for(const d of D){ const b=ridge(d,lam); bs.push(b); m0+=b[0]; m1+=b[1]; }
+  m0/=S; m1/=S; const bias2=quad([m0-BETA[0], m1-BETA[1]]); let v=0; for(const b of bs) v+=quad([b[0]-m0,b[1]-m1]); v/=S;
+  return {bias2, v, mse: (1 + 1/N)*(SIG*SIG + bias2 + v)}; }
+function recomputeMC(){
+  const D = []; for(let s=0;s<S;s++) D.push(sample(s));
+  MC0 = mcAt(D, 0);
+  MC = LG.map(lg => {
+    const lam = Math.pow(10,lg); let m0=0,m1=0; const bs=[];
+    for(const d of D){ const b=ridge(d,lam); bs.push(b); m0+=b[0]; m1+=b[1]; }
+    m0/=S; m1/=S;
+    const bias2 = quad([m0-BETA[0], m1-BETA[1]]);
+    let v=0; for(const b of bs) v += quad([b[0]-m0, b[1]-m1]); v/=S;
+    return {lg, bias2, v, mse: (1 + 1/N)*(SIG*SIG + bias2 + v)};   // exact: intercept estimated by ybar
+  });
+}
+
+
+/* 10-fold CV for the displayed sample: folds of 3 observations, centring inside each training fold */
+function sampleRaw(s){
+  const [a,b,e] = Z[s]; const c = Math.sqrt(1-RHO*RHO); const X=[], y=[];
+  for(let i=0;i<N;i++){ const u=a[i], v=RHO*a[i]+c*b[i]; X.push([u,v]); y.push(BETA[0]*u+BETA[1]*v+SIG*e[i]); }
+  return {X, y};
+}
+function cvLambda(s){
+  const {X, y} = sampleRaw(s); const K = 10, fs = N / K; let best = null;
+  for(const lg of LG){
+    const lam = Math.pow(10, lg); let sse = 0;
+    for(let k=0;k<K;k++){
+      const tr=[], te=[]; for(let i=0;i<N;i++) (Math.floor(i/fs)===k ? te : tr).push(i);
+      let m1=0,m2=0,my=0; for(const i of tr){ m1+=X[i][0]; m2+=X[i][1]; my+=y[i]; } m1/=tr.length; m2/=tr.length; my/=tr.length;
+      let s11=0,s12=0,s22=0,s1y=0,s2y=0;
+      for(const i of tr){ const u=X[i][0]-m1, v=X[i][1]-m2, w=y[i]-my; s11+=u*u; s12+=u*v; s22+=v*v; s1y+=u*w; s2y+=v*w; }
+      const b_ = ridge({A:[[s11,s12],[s12,s22]], g:[s1y,s2y]}, lam);
+      for(const i of te){ const r = y[i] - (my + b_[0]*(X[i][0]-m1) + b_[1]*(X[i][1]-m2)); sse += r*r; }
+    }
+    if(best===null || sse < best.sse) best = {lg, sse};
+  }
+  return best.lg;
+}
+/* ---------------- drawing helpers ---------------- */
+const NS = "http://www.w3.org/2000/svg";
+function el(svg, tag, attrs, text){ const e=document.createElementNS(NS,tag); for(const k in attrs) e.setAttribute(k, attrs[k]); if(text!==undefined) e.textContent=text; svg.appendChild(e); return e; }
+function clear(svg){ while(svg.firstChild) svg.removeChild(svg.firstChild); }
+function axes(svg, X0,X1,Y0,Y1, sx,sy, xlab, ylab, xt, yt){
+  el(svg,'line',{x1:sx(X0),y1:sy(Y0),x2:sx(X1),y2:sy(Y0),stroke:'#999'});
+  el(svg,'line',{x1:sx(X0),y1:sy(Y0),x2:sx(X0),y2:sy(Y1),stroke:'#999'});
+  for(const t of xt){ el(svg,'line',{x1:sx(t),y1:sy(Y0),x2:sx(t),y2:sy(Y0)+4,stroke:'#999'}); el(svg,'text',{x:sx(t),y:sy(Y0)+17,'font-size':15,'text-anchor':'middle',fill:'#555'}, t); }
+  for(const t of yt){ el(svg,'line',{x1:sx(X0)-4,y1:sy(t),x2:sx(X0),y2:sy(t),stroke:'#999'}); el(svg,'text',{x:sx(X0)-6,y:sy(t)+4,'font-size':15,'text-anchor':'end',fill:'#555'}, (+t.toFixed(2)).toString()); }
+  el(svg,'text',{x:(sx(X0)+sx(X1))/2,y:sy(Y0)+34,'font-size':16,'text-anchor':'middle',fill:'#333'}, xlab);
+  el(svg,'text',{x:11,y:(sy(Y0)+sy(Y1))/2,'font-size':16,'text-anchor':'middle',fill:'#333',transform:`rotate(-90 11 ${(sy(Y0)+sy(Y1))/2})`}, ylab);
+}
+
+/* panel 1: geometry */
+function drawGeo(d, bo, br){
+  const svg=document.getElementById('geo'); clear(svg);
+  const L=-0.5, R=2.5, W=330, H=300, pad=50;
+  const k=Math.min(W-pad-12, H-pad-12)/(R-L);   // equal pixel scale on both axes: the disc is a circle
+  const sx=v=>pad+(v-L)*k, sy=v=>H-pad-(v-L)*k;
+  axes(svg,L,R,L,R,sx,sy,'β₁','β₂',[0,1,2],[0,1,2]);
+  el(svg,'line',{x1:sx(0),y1:sy(L),x2:sx(0),y2:sy(R),stroke:'#ddd'}); el(svg,'line',{x1:sx(L),y1:sy(0),x2:sx(R),y2:sy(0),stroke:'#ddd'});
+  // clip disc/contours/path to the plot area
+  const defs=el(svg,'defs',{}), cp=el(defs,'clipPath',{id:'gclip'}); el(cp,'rect',{x:sx(L),y:sy(R),width:sx(R)-sx(L),height:sy(L)-sy(R)});
+  const G=el(svg,'g',{'clip-path':'url(#gclip)'});
+  // ridge disc: radius = ||beta_ridge||
+  const r = Math.hypot(br[0],br[1]);
+  el(G,'ellipse',{cx:sx(0),cy:sy(0),rx:sx(r)-sx(0),ry:sy(0)-sy(r),fill:'#5b8fa0',opacity:0.35,stroke:'#2f6070'});
+  // RSS contours around OLS: (b-bo)' A (b-bo) = c ; eigen-decompose A
+  const a=d.A[0][0], b=d.A[0][1], c=d.A[1][1];
+  const tr=a+c, dt=a*c-b*b, l1=tr/2+Math.sqrt(tr*tr/4-dt), l2=tr/2-Math.sqrt(tr*tr/4-dt);
+  const ang = Math.atan2(l1-a, b);   // eigenvector of l1
+  // level through the ridge point, plus two others
+  const dr=[br[0]-bo[0], br[1]-bo[1]], lev=a*dr[0]*dr[0]+2*b*dr[0]*dr[1]+c*dr[1]*dr[1];
+  for(const f of [0.3, 1, 3.5]){
+    const cc = Math.max(lev*f, 1e-6); let pts='';
+    for(let k=0;k<=72;k++){ const t=2*Math.PI*k/72, u=Math.sqrt(cc/l1)*Math.cos(t), v=Math.sqrt(cc/l2)*Math.sin(t);
+      const px=bo[0]+u*Math.cos(ang)-v*Math.sin(ang), py=bo[1]+u*Math.sin(ang)+v*Math.cos(ang); pts+=`${sx(px)},${sy(py)} `; }
+    el(G,'polyline',{points:pts,fill:'none',stroke:f===1?'#c00000':'#e8a0a0','stroke-width':f===1?2:1});
+  }
+  // ridge path from OLS (lambda -> 0) to 0 (lambda -> inf)
+  let pts=''; for(let k=0;k<=80;k++){ const bb=ridge(d,Math.pow(10,-2+6*k/80)); pts+=`${sx(bb[0])},${sy(bb[1])} `; }
+  el(G,'polyline',{points:pts,fill:'none',stroke:'#1f6f2e','stroke-dasharray':'4 3','stroke-width':1.5});
+  el(svg,'circle',{cx:sx(BETA[0]),cy:sy(BETA[1]),r:5,fill:'none',stroke:'#000','stroke-width':1.5});
+  el(svg,'text',{x:sx(BETA[0])-8,y:sy(BETA[1])+16,'font-size':15,'text-anchor':'end',fill:'#000'},'true β');
+  el(svg,'circle',{cx:sx(bo[0]),cy:sy(bo[1]),r:4,fill:'#c00000'});
+  el(svg,'text',{x:sx(bo[0])+6,y:sy(bo[1])-6,'font-size':15,fill:'#c00000'},'OLS');
+  el(svg,'circle',{cx:sx(br[0]),cy:sy(br[1]),r:5,fill:'#1f6f2e'});
+  el(svg,'text',{x:sx(br[0])+6,y:sy(br[1])+14,'font-size':15,fill:'#1f6f2e'},'ridge');
+}
+
+/* panel 2: coefficient paths */
+function drawPath(d){
+  const svg=document.getElementById('path'); clear(svg);
+  const W=330,H=300,pad=50; let lo=-0.5, hi=2.5;
+  const bs=LG.map(lg=>ridge(d,Math.pow(10,lg)));
+  for(const b of bs){ lo=Math.min(lo,b[0],b[1]); hi=Math.max(hi,b[0],b[1]); }
+  const sx=v=>pad+(v+2)/5*(W-pad-12), sy=v=>H-pad-(v-lo)/(hi-lo)*(H-pad-12);
+  axes(svg,-2,3,lo,hi,sx,sy,'log₁₀ λ','coefficient',[-2,-1,0,1,2,3],[Math.ceil(lo),0,1,2].filter((v,i,a)=>a.indexOf(v)===i && v>=lo && v<=hi));
+  el(svg,'line',{x1:sx(-2),y1:sy(0),x2:sx(3),y2:sy(0),stroke:'#ccc'});
+  const cols=['#0070c0','#ed7d31'];
+  for(const j of [0,1]){
+    el(svg,'polyline',{points:bs.map((b,k)=>`${sx(LG[k])},${sy(b[j])}`).join(' '),fill:'none',stroke:cols[j],'stroke-width':2});
+    el(svg,'line',{x1:sx(-2),y1:sy(BETA[j]),x2:sx(3),y2:sy(BETA[j]),stroke:cols[j],'stroke-dasharray':'3 3',opacity:0.6});
+  }
+  el(svg,'text',{x:W-14,y:20,'font-size':15,'text-anchor':'end',fill:cols[0]},'β̂₁(λ)   ┄ true β₁');
+  el(svg,'text',{x:W-14,y:40,'font-size':15,'text-anchor':'end',fill:cols[1]},'β̂₂(λ)   ┄ true β₂');
+  el(svg,'text',{x:W-14,y:60,'font-size':15,'text-anchor':'end',fill:'#1f6f2e'},'│ current λ');
+  const x=sx(Math.log10(LAM)); el(svg,'line',{x1:x,y1:sy(lo),x2:x,y2:sy(hi),stroke:'#1f6f2e','stroke-width':1.5});
+}
+
+/* panel 3: Monte Carlo bias/variance */
+function drawBV(){
+  const svg=document.getElementById('bv'); clear(svg);
+  const W=330,H=300,pad=50;
+  // y-range: 3x the OLS excess MSE, so the U-shape is visible; larger values are clipped at the top
+  const ex0 = MC0.mse - SIG*SIG*(1 + 1/N); const hi = Math.max(3*ex0, 0.05);
+  const sx=v=>pad+(v+2)/5*(W-pad-12), sy=v=>H-pad-v/hi*(H-pad-12);
+  const ticks=[0, hi/2, hi].map(v=>+v.toPrecision(2));
+  axes(svg,-2,3,0,hi,sx,sy,'log₁₀ λ','excess test MSE',[-2,-1,0,1,2,3],ticks);
+  const line=(f,col,w,dash)=>el(svg,'polyline',{points:MC.map(m=>`${sx(m.lg)},${sy(Math.min(f(m),hi))}`).join(' '),fill:'none',stroke:col,'stroke-width':w,'stroke-dasharray':dash||''});
+  // bias² and variance scaled by (1+1/N) so they add up to the red excess-MSE curve
+  line(m=>(1+1/N)*m.bias2,'#222222',2); line(m=>(1+1/N)*m.v,'#1a9e77',2);
+  line(m=>(m.mse-SIG*SIG*(1 + 1/N)),'#a03c8c',2.5);
+  let best=MC[0]; for(const m of MC) if(m.mse<best.mse) best=m;
+  el(svg,'circle',{cx:sx(best.lg),cy:sy((best.mse-SIG*SIG*(1 + 1/N))),r:4,fill:'#a03c8c'});
+  el(svg,'text',{x:sx(-2)+8,y:20,'font-size':15,'text-anchor':'start',fill:'#222222'},'bias²');
+  el(svg,'text',{x:sx(-2)+8,y:40,'font-size':15,'text-anchor':'start',fill:'#1a9e77'},'variance');
+  el(svg,'text',{x:sx(-2)+8,y:60,'font-size':15,'text-anchor':'start',fill:'#a03c8c'},'excess test MSE (● oracle λ*)');
+  const x=sx(Math.log10(LAM)); el(svg,'line',{x1:x,y1:sy(0),x2:x,y2:sy(hi),stroke:'#1f6f2e','stroke-width':1.5});
+  const xc=sx(CVLG); el(svg,'line',{x1:xc,y1:sy(0),x2:xc,y2:sy(hi),stroke:'#d97706','stroke-width':1.5,'stroke-dasharray':'5 3'});
+  el(svg,'text',{x:sx(-2)+8,y:80,'font-size':15,'text-anchor':'start',fill:'#d97706'},'┆ CV-chosen λ');
+  el(svg,'text',{x:sx(-2)+8,y:100,'font-size':15,'text-anchor':'start',fill:'#1f6f2e'},'│ current λ');  return best;
+}
+
+function nearestMC(){ const lg=Math.log10(LAM); let b=MC[0]; for(const m of MC) if(Math.abs(m.lg-lg)<Math.abs(b.lg-lg)) b=m; return b; }
+
+let CVLG = 0;
+function render(){
+  const d=sample(shown), bo=ridge(d,0), br=ridge(d,LAM); CVLG = cvLambda(shown);
+  drawGeo(d,bo,br); drawPath(d); const best=drawBV(); const cur=nearestMC();
+  const f=v=>v.toFixed(3);
+  document.getElementById('ro').innerHTML =
+    `<b>Sample</b> (N = ${N})<br>OLS β̂ = (${f(bo[0])}, ${f(bo[1])})<br>ridge β̂ = (${f(br[0])}, ${f(br[1])})<br>`+
+    `‖β̂ᴿ‖ / ‖β̂ᴼᴸˢ‖ = ${(Math.hypot(br[0],br[1])/Math.hypot(bo[0],bo[1])).toFixed(2)}<br><br>`+
+    `<b>Monte Carlo at this λ</b><br>bias² = ${f(cur.bias2)}<br>variance = ${f(cur.v)}<br>test MSE = ${f(cur.mse)}<br>`+
+    `OLS (λ = 0) test MSE = ${f(MC0.mse)}<br><br><b>Oracle λ*</b> ≈ ${Math.pow(10,best.lg).toPrecision(2)} (MSE ${f(best.mse)})<br><span style="color:#595959">(true-MSE minimizer; unknown in practice)</span><br><b>CV-chosen λ</b> ≈ ${Math.pow(10,CVLG).toPrecision(2)} (10-fold, this sample)<br>`+
+    `<span style="color:#595959">true β = (1.5, 0.5); floor σ²(1+1/N)</span>`;
+}
+
+const $=id=>document.getElementById(id);
+function onLam(){ LAM=Math.pow(10,+$('lam').value); $('lamVal').textContent='λ = '+(LAM<10?LAM.toFixed(2):LAM.toFixed(0)); render(); }
+$('lam').addEventListener('input', onLam);
+$('rho').addEventListener('input', ()=>{ RHO=+$('rho').value; $('rhoVal').textContent='ρ = '+RHO.toFixed(2); recomputeMC(); render(); });
+$('sig').addEventListener('input', ()=>{ SIG=+$('sig').value; $('sigVal').textContent='σ = '+SIG.toFixed(1); recomputeMC(); render(); });
+$('bNew').addEventListener('click', ()=>{ shown=(shown+1)%S; render(); });
+let timer=null;
+$('bSweep').addEventListener('click', ()=>{
+  if(timer){ clearInterval(timer); timer=null; $('bSweep').classList.remove('on'); $('bSweep').textContent='▶ Sweep λ'; return; }
+  $('bSweep').classList.add('on'); $('bSweep').textContent='■ Stop'; $('lam').value=-2;
+  timer=setInterval(()=>{ let v=+$('lam').value+0.05; if(v>3){ v=-2; } $('lam').value=v; onLam(); }, 80);
+});
+recomputeMC(); onLam();
+</script>
+</body>
+</html>
